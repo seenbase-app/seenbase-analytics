@@ -1,0 +1,18 @@
+{
+  "name": "@seenbase-analytics/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "migrate:local": "wrangler d1 migrations apply seenbase-analytics-local --local --persist-to ../../.wrangler/state",
+    "migrate:remote": "wrangler d1 migrations apply seenbase-analytics-local --remote",
+    "seed:local": "wrangler d1 execute seenbase-analytics-local --local --file=seed.sql --persist-to ../../.wrangler/state"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250514.0",
+    "typescript": "^5.8.3",
+    "wrangler": "4.122.0"
+  }
+}

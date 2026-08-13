@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "seenbase-analytics-dashboard",
+  "compatibility_date": "2026-08-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "seenbase-analytics-local",
+      "database_id": "seenbase-analytics-local",
+      "preview_database_id": "seenbase-analytics-local"
+    }
+  ],
+  "vars": {
+    "TRACKER_BASE_URL": "http://127.0.0.1:8787"
+  }
+}

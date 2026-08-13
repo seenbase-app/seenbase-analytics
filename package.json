@@ -1,0 +1,30 @@
+{
+  "name": "seenbase-analytics",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n tracker,dashboard -c cyan,blue \"npm run dev --workspace=@seenbase-analytics/tracker\" \"npm run dev --workspace=@seenbase-analytics/dashboard\"",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "types": "npm run types --workspaces --if-present",
+    "db:migrate:local": "npm run migrate:local --workspace=@seenbase-analytics/db",
+    "db:migrate:remote": "npm run migrate:remote --workspace=@seenbase-analytics/db",
+    "db:seed:local": "npm run seed:local --workspace=@seenbase-analytics/db"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.21",
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4",
+    "wrangler": "4.122.0"
+  }
+}

@@ -1,0 +1,153 @@
+---
+import '../styles/global.css';
+import { env } from 'cloudflare:workers';
+import { passwordMatches, createSession } from '../lib/auth';
+import type { DashboardEnv } from '../env';
+
+let errorMessage = '';
+
+if (Astro.request.method === 'POST') {
+  try {
+    const envRecord = env as unknown as DashboardEnv;
+    const adminPassword = envRecord.ADMIN_PASSWORD;
+    const sessionSecret = envRecord.SESSION_SECRET;
+
+    if (!adminPassword || adminPassword.length < 12 || !sessionSecret || sessionSecret.length < 32) {
+      return new Response('Authentication configuration error: ADMIN_PASSWORD (min 12 chars) or SESSION_SECRET (min 32 chars) invalid', {
+        status: 500,
+      });
+    }
+
+    const formData = await Astro.request.formData();
+    const password = formData.get('password')?.toString() ?? '';
+
+    const matches = await passwordMatches(password, adminPassword);
+    if (matches) {
+      const sessionToken = await createSession(sessionSecret);
+      const isHttps = Astro.url.protocol === 'https:';
+
+      Astro.cookies.set('seenbase_session', sessionToken, {
+        path: '/',
+        httpOnly: true,
+        sameSite: 'strict',
+        maxAge: 7 * 24 * 3600,
+        secure: isHttps,
+      });
+
+      return Astro.redirect('/dashboard');
+    } else {
+      Astro.response.status = 401;
+      errorMessage = 'Invalid admin password.';
+    }
+  } catch (e) {
+    Astro.response.status = 500;
+    errorMessage = 'An error occurred during authentication.';
+  }
+}
+---
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign In — SeenBase Analytics</title>
+  <script is:inline>
+    try {
+      const t = localStorage.getItem('theme');
+      if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    } catch {}
+  </script>
+  <style>
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background: var(--bg);
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 32px;
+      width: 100%;
+      max-width: 400px;
+      box-shadow: var(--shadow);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+    .brand-mark {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: var(--text);
+      color: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+    }
+    .brand-name {
+      font-size: 18px;
+      font-weight: 600;
+    }
+    .form-group {
+      margin-bottom: 20px;
+    }
+    .form-group label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 6px;
+      color: var(--text-2);
+    }
+    .form-group input {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 14px;
+    }
+    .error {
+      background: var(--bot-soft);
+      color: var(--bot);
+      border: 1px solid var(--bot-border);
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      margin-bottom: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">
+      <div class="brand-mark">SB</div>
+      <div class="brand-name">SeenBase Analytics</div>
+    </div>
+
+    <h1 style="font-size: 20px; font-weight: 600; margin: 0 0 6px 0;">Sign In</h1>
+    <p style="font-size: 13px; color: var(--text-3); margin: 0 0 24px 0;">Enter your admin password to access the analytics workspace.</p>
+
+    {errorMessage && <div class="error">{errorMessage}</div>}
+
+    <form method="POST">
+      <div class="form-group">
+        <label for="password">Admin Password</label>
+        <input type="password" id="password" name="password" required autofocus />
+      </div>
+      <button type="submit" class="btn primary" style="width: 100%; padding: 10px; font-size: 14px;">
+        Sign In
+      </button>
+    </form>
+  </div>
+</body>
+</html>

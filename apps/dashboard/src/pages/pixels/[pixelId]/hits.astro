@@ -1,0 +1,383 @@
+---
+import type { EventRow, PixelRow } from '@seenbase-analytics/db';
+import { env } from 'cloudflare:workers';
+import type { DashboardEnv } from '../../../env';
+import AppShell from '../../../layouts/AppShell.astro';
+import { getCountryFlag } from '../../../lib/icons';
+
+const envRecord = env as unknown as DashboardEnv;
+const db = envRecord.DB;
+const pixelId = Astro.params.pixelId!;
+
+const pixel = await db
+  .prepare('SELECT id, name, active FROM pixels WHERE id = ? AND deleted_at IS NULL')
+  .bind(pixelId)
+  .first<Pick<PixelRow, 'id' | 'name' | 'active'>>();
+
+if (!pixel) return Astro.redirect('/dashboard');
+
+const showBots = Astro.url.searchParams.get('bots') === '1';
+const rawCursor = Astro.url.searchParams.get('cursor');
+const cursor = rawCursor && /^\d+$/.test(rawCursor) ? parseInt(rawCursor, 10) : null;
+
+if (Astro.url.searchParams.get('export') === 'csv') {
+  return new Response(
+    generateCsv(
+      ['id', 'created', 'ip_hash', 'is_bot', 'country', 'city', 'region', 'asn', 'as_org', 'lang', 'referer', 'ua', 'meta'],
+      ((await db
+        .prepare(
+          `SELECT id, created, ip_hash, is_bot, country, city, region, asn, as_org, lang, ua, referer, meta
+             FROM events
+            WHERE pixel_id = ? ${showBots ? '' : 'AND is_bot = 0'}
+            ORDER BY id DESC LIMIT 5000`,
+        )
+        .bind(pixelId)
+        .all<Pick<EventRow, 'id' | 'created' | 'ip_hash' | 'is_bot' | 'country' | 'city' | 'region' | 'asn' | 'as_org' | 'lang' | 'ua' | 'referer' | 'meta'>>()).results ?? []).map(e => [
+        e.id,
+        new Date(e.created).toISOString(),
+        e.ip_hash,
+        e.is_bot ? 1 : 0,
+        e.country,
+        e.city,
+        e.region,
+        e.asn,
+        e.as_org,
+        e.lang,
+        e.referer,
+        e.ua,
+        e.meta,
+      ])
+    ),
+    {
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="hits-${pixelId}${showBots ? '-with-bots' : ''}.csv"`,
+      },
+    }
+  );
+}
+
+function parseBrowser(ua: string | null): string {
+  if (!ua) return '—';
+  if (/Edg\//.test(ua)) return 'Edge';
+  if (/OPR\/|Opera/.test(ua)) return 'Opera';
+  if (/Firefox\//.test(ua)) return 'Firefox';
+  if (/Chrome\//.test(ua)) return 'Chrome';
+  if (/Safari\//.test(ua)) return 'Safari';
+  return 'Other';
+}
+function parseOS(ua: string | null): string {
+  if (!ua) return '—';
+  if (/iPhone|iPad/.test(ua)) return 'iOS';
+  if (/Android/.test(ua)) return 'Android';
+  if (/Windows/.test(ua)) return 'Windows';
+  if (/Mac OS X/.test(ua)) return 'macOS';
+  if (/Linux/.test(ua)) return 'Linux';
+  return 'Other';
+}
+function parseDevice(ua: string | null): string {
+  if (!ua) return 'Desktop';
+  if (/iPad/.test(ua)) return 'Tablet';
+  if (/Mobile/.test(ua)) return 'Mobile';
+  return 'Desktop';
+}
+
+type UTMMeta = Partial<Record<'utm_source' | 'utm_medium' | 'utm_campaign' | 'utm_term' | 'utm_content', string>>;
+type EventQueryRow = Pick<EventRow, 'id' | 'created' | 'ip_hash' | 'referer' | 'country' | 'city' | 'region' | 'asn' | 'as_org' | 'lang' | 'ua' | 'is_bot' | 'meta'>;
+type CountRow = { cnt: number };
+
+const botFilter = showBots ? '' : 'AND e.is_bot = 0';
+const cursorFilter = cursor ? 'AND e.id < ?' : '';
+const queryParams: (string | number)[] = [pixelId];
+if (cursor) queryParams.push(cursor);
+
+const [eventsResult, countResult] = await db.batch<EventQueryRow | CountRow>([
+  db
+    .prepare(`SELECT e.id, e.created, e.ip_hash, e.referer, e.country, e.city, e.region, e.asn, e.as_org, e.lang, e.ua, e.is_bot, e.meta
+     FROM events e
+     WHERE e.pixel_id = ? ${botFilter} ${cursorFilter}
+     ORDER BY e.id DESC LIMIT 51`)
+    .bind(...queryParams),
+  db
+    .prepare(`SELECT COUNT(*) as cnt FROM events e WHERE e.pixel_id=? ${botFilter}`)
+    .bind(pixelId),
+]);
+
+const rawEvents = (eventsResult.results ?? []) as EventQueryRow[];
+const totalHits = ((countResult.results?.[0] as CountRow)?.cnt) ?? 0;
+
+const hasNext = rawEvents.length === 51;
+const displayEvents = rawEvents.slice(0, 50);
+const nextCursor = hasNext ? String(rawEvents[49].id) : null;
+
+const parsedHits = displayEvents.map(e => {
+  let utms: UTMMeta = {};
+  if (e.meta) {
+    try {
+      utms = JSON.parse(e.meta) as UTMMeta;
+    } catch {
+      utms = {};
+    }
+  }
+
+  return {
+    id: e.id,
+    created: e.created,
+    createdAt: new Date(e.created).toISOString().replace('T', ' ').slice(0, 19),
+    ip_hash: e.ip_hash,
+    is_bot: !!e.is_bot,
+    country: e.country,
+    city: e.city,
+    region: e.region,
+    asn: e.asn,
+    as_org: e.as_org,
+    lang: e.lang,
+    referer: e.referer,
+    ua: e.ua,
+    browser: parseBrowser(e.ua),
+    os: parseOS(e.ua),
+    device: parseDevice(e.ua),
+    utms,
+  };
+});
+
+const hitsJsonStr = JSON.stringify(parsedHits);
+
+function botToggleHref(): string {
+  const u = new URL(Astro.url.href);
+  if (showBots) {
+    u.searchParams.delete('bots');
+  } else {
+    u.searchParams.set('bots', '1');
+  }
+  u.searchParams.delete('cursor');
+  return u.pathname + u.search;
+}
+
+function exportHref(): string {
+  const u = new URL(Astro.url.href);
+  u.searchParams.set('export', 'csv');
+  u.searchParams.delete('cursor');
+  return u.pathname + u.search;
+}
+
+function pageUrl(newCursor: string | null): string {
+  const u = new URL(Astro.url.href);
+  if (newCursor) {
+    u.searchParams.set('cursor', newCursor);
+  } else {
+    u.searchParams.delete('cursor');
+  }
+  return u.toString();
+}
+
+function browserDotColor(browser: string): string {
+  const map: Record<string, string> = {
+    Chrome: '#eab308',
+    Safari: '#3b82f6',
+    Firefox: '#ef4444',
+    Edge: '#06b6d4',
+    Opera: '#dc2626',
+  };
+  return map[browser] ?? '#a1a1aa';
+}
+---
+<AppShell
+  title={`Live Hits — ${pixel.name} — SeenBase Analytics`}
+  crumbs={[{ label: 'Workspace', href: '/dashboard' }, { label: 'Pixels', href: '/dashboard' }, { label: pixel.name, href: `/pixels/${pixelId}` }, 'Hits']}
+  active="pixels"
+>
+  <div class="pagehead">
+    <div>
+      <h1>Live Hits</h1>
+      <div class="sub">{totalHits.toLocaleString()} total events · <span style="color:var(--text);">{pixel.name}</span></div>
+    </div>
+    <div class="actions">
+      <a href={botToggleHref()} class="btn ghost">
+        {showBots ? '✓ Bots Included' : 'Exclude Bots'}
+      </a>
+      <a href={exportHref()} class="btn">Export CSV</a>
+    </div>
+  </div>
+
+  <div class="card" style="overflow:hidden;">
+    {parsedHits.length === 0 ? (
+      <div style="padding:40px;text-align:center;color:var(--text-3);">
+        No hits found{!showBots ? ' (excluding bots)' : ''}.
+      </div>
+    ) : (
+      <div class="table-wrap">
+        <table class="t hits">
+          <thead>
+            <tr>
+              <th style="width:168px;">Time · UTC</th>
+              <th style="width:130px;">Visitor</th>
+              <th>Geo</th>
+              <th>Browser · OS</th>
+              <th>Device</th>
+              <th>Source · Campaign</th>
+              <th>Referer</th>
+            </tr>
+          </thead>
+          <tbody>
+            {parsedHits.map((h, i) => (
+              <tr data-hit-idx={i}>
+                <td class="ts">{h.createdAt}</td>
+                <td>
+                  <div class="iphash">⌗ {h.ip_hash ? h.ip_hash.slice(0, 10) + '…' : '—'}</div>
+                  {h.is_bot
+                    ? <span class="pill bot" style="margin-top:4px;display:inline-flex;"><span class="dot"></span>bot</span>
+                    : <span style="font-size:11px;color:var(--text-3);">human</span>
+                  }
+                </td>
+                <td>
+                  <div style="display:flex;align-items:center;gap:6px;">
+                    {h.country && <span class="flag">{getCountryFlag(h.country)}</span>}
+                    <span>{h.city ?? h.country ?? '—'}</span>
+                  </div>
+                  {(h.as_org || h.asn) && (
+                    <div style="color:var(--text-3);font-size:11.5px;margin-top:2px;">
+                      {h.as_org} {h.asn && <span class="mono">({h.asn})</span>}
+                    </div>
+                  )}
+                </td>
+                <td>
+                  <div style="display:flex;align-items:center;">
+                    <span style={`display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:7px;background:${browserDotColor(h.browser)};opacity:0.7;vertical-align:-1px;`}></span>
+                    <span>{h.browser}</span>
+                  </div>
+                  <div style="color:var(--text-3);font-size:11.5px;margin-top:2px;">
+                    {h.os}{h.lang ? ' · ' + h.lang : ''}
+                  </div>
+                </td>
+                <td><span class="mono" style="font-size:11.5px;color:var(--text-2);">{h.device.toLowerCase()}</span></td>
+                <td>
+                  {h.utms.utm_source && <div class="mono" style="color:var(--text);font-size:12px;">{h.utms.utm_source}</div>}
+                  {h.utms.utm_campaign && <div class="mono" style="color:var(--text-3);font-size:11.5px;margin-top:2px;">{h.utms.utm_campaign}</div>}
+                  {!h.utms.utm_source && !h.utms.utm_campaign && <span style="color:var(--text-4);">—</span>}
+                </td>
+                <td class="ua-cell mono" style="font-size:11.5px;">{h.referer ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+
+    <div style="display:flex;align-items:center;padding:12px 18px;border-top:1px solid var(--border);gap:8px;">
+      {cursor
+        ? <a href={pageUrl(null)} class="btn ghost" style="font-size:12px;">← First Page</a>
+        : <button class="btn ghost" style="font-size:12px;opacity:0.4;" disabled>← First Page</button>
+      }
+      {hasNext && nextCursor
+        ? <a href={pageUrl(nextCursor)} class="btn ghost" style="font-size:12px;">Older Hits →</a>
+        : <button class="btn ghost" style="font-size:12px;opacity:0.4;" disabled>Older Hits →</button>
+      }
+      <div style="flex:1;"></div>
+      <span style="font-size:12px;color:var(--text-3);">Showing 50 per page</span>
+    </div>
+  </div>
+
+  <div id="drawer-backdrop" class="hit-overlay-backdrop" style="display:none;"></div>
+  <div id="drawer-panel" class="hit-overlay-panel" style="display:none;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;padding-bottom:12px;border-bottom:1px solid var(--border);">
+      <div>
+        <h3 style="margin:0;font-size:16px;font-weight:600;">Hit Details</h3>
+        <div id="d-ts" class="mono" style="font-size:12px;color:var(--text-3);margin-top:2px;"></div>
+      </div>
+      <button id="drawer-close-btn" class="btn ghost" type="button" style="padding:4px 8px;font-size:16px;">✕</button>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:18px;">
+      <div>
+        <h4 style="font-size:11.5px;font-weight:600;text-transform:uppercase;color:var(--text-3);margin:0 0 8px 0;">Visitor Identity</h4>
+        <dl class="kv">
+          <dt>Visitor Hash</dt>
+          <dd id="d-iphash"></dd>
+          <dt>Traffic Type</dt>
+          <dd id="d-bottype"></dd>
+        </dl>
+      </div>
+
+      <div>
+        <h4 style="font-size:11.5px;font-weight:600;text-transform:uppercase;color:var(--text-3);margin:0 0 8px 0;">Location & Network</h4>
+        <dl class="kv">
+          <dt>Country / City</dt>
+          <dd id="d-location"></dd>
+          <dt>ISP / ASN</dt>
+          <dd id="d-isp"></dd>
+        </dl>
+      </div>
+
+      <div>
+        <h4 style="font-size:11.5px;font-weight:600;text-transform:uppercase;color:var(--text-3);margin:0 0 8px 0;">Client Environment</h4>
+        <dl class="kv">
+          <dt>Browser / OS</dt>
+          <dd id="d-env"></dd>
+          <dt>User Agent</dt>
+          <dd id="d-ua" style="word-break:break-all;"></dd>
+          <dt>Referer</dt>
+          <dd id="d-referer" style="word-break:break-all;"></dd>
+        </dl>
+      </div>
+
+      <div>
+        <h4 style="font-size:11.5px;font-weight:600;text-transform:uppercase;color:var(--text-3);margin:0 0 8px 0;">UTM Campaign Meta</h4>
+        <dl class="kv">
+          <dt>utm_source</dt><dd id="d-utmsource"></dd>
+          <dt>utm_medium</dt><dd id="d-utmmedium"></dd>
+          <dt>utm_campaign</dt><dd id="d-utmcampaign"></dd>
+          <dt>utm_term</dt><dd id="d-utmterm"></dd>
+          <dt>utm_content</dt><dd id="d-utmcontent"></dd>
+        </dl>
+      </div>
+
+      <div style="background:var(--surface-2);border:1px solid var(--border-2);padding:10px 12px;border-radius:var(--radius-sm);font-size:11.5px;color:var(--text-3);margin-top:12px;">
+        Pseudonymized analytics data (day-scoped HMAC of visitor IP + salt). Raw IP address is never stored.
+      </div>
+    </div>
+  </div>
+
+  <script is:inline define:vars={{ hitsJsonStr }}>
+    (function() {
+      const hits = JSON.parse(hitsJsonStr);
+      const backdrop = document.getElementById('drawer-backdrop');
+      const panel = document.getElementById('drawer-panel');
+      const closeBtn = document.getElementById('drawer-close-btn');
+
+      function closeDrawer() {
+        if (backdrop) backdrop.style.display = 'none';
+        if (panel) panel.style.display = 'none';
+      }
+
+      if (closeBtn) closeBtn.addEventListener('click', closeDrawer);
+      if (backdrop) backdrop.addEventListener('click', closeDrawer);
+
+      document.querySelectorAll('tr[data-hit-idx]').forEach(row => {
+        row.addEventListener('click', () => {
+          const idx = parseInt(row.getAttribute('data-hit-idx'), 10);
+          const h = hits[idx];
+          if (!h) return;
+
+          document.getElementById('d-ts').textContent = h.createdAt;
+          document.getElementById('d-iphash').textContent = h.ip_hash || '—';
+          document.getElementById('d-bottype').textContent = h.is_bot ? 'Bot / Automated' : 'Human Visitor';
+          document.getElementById('d-location').textContent = [h.city, h.region, h.country].filter(Boolean).join(', ') || '—';
+          document.getElementById('d-isp').textContent = [h.as_org, h.asn].filter(Boolean).join(' ') || '—';
+          document.getElementById('d-env').textContent = `${h.browser} / ${h.os}${h.lang ? ' (' + h.lang + ')' : ''}`;
+          document.getElementById('d-ua').textContent = h.ua || '—';
+          document.getElementById('d-referer').textContent = h.referer || '—';
+
+          document.getElementById('d-utmsource').textContent = h.utms.utm_source || '—';
+          document.getElementById('d-utmmedium').textContent = h.utms.utm_medium || '—';
+          document.getElementById('d-utmcampaign').textContent = h.utms.utm_campaign || '—';
+          document.getElementById('d-utmterm').textContent = h.utms.utm_term || '—';
+          document.getElementById('d-utmcontent').textContent = h.utms.utm_content || '—';
+
+          if (backdrop) backdrop.style.display = 'block';
+          if (panel) panel.style.display = 'block';
+        });
+      });
+    })();
+  </script>
+</AppShell>

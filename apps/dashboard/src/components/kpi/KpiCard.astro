@@ -1,0 +1,85 @@
+---
+import Sparkline from '../charts/Sparkline.astro';
+
+interface Props {
+  label: string;
+  value: string;
+  deltaText?: string;
+  deltaDir?: 'up' | 'down' | 'neutral';
+  deltaSub?: string;
+  sparklineData?: number[];
+  contextText?: string;
+  accentColor?: string;
+}
+const {
+  label,
+  value,
+  deltaText,
+  deltaDir = 'neutral',
+  deltaSub,
+  sparklineData,
+  contextText,
+  accentColor
+} = Astro.props;
+
+const sparkColor = accentColor
+  ? accentColor
+  : deltaDir === 'up'
+    ? 'oklch(0.65 0.18 145)'
+    : deltaDir === 'down'
+      ? 'var(--bot)'
+      : 'var(--text-3)';
+---
+<div class="kpi-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;display:flex;flex-direction:column;justify-content:space-between;box-shadow:var(--shadow-sm);transition:border-color 0.2s ease, box-shadow 0.2s ease;position:relative;overflow:hidden;">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+    <span class="label" style="font-size:12px;font-weight:500;color:var(--text-3);line-height:1.3;">{label}</span>
+    {sparklineData && sparklineData.length > 1 && (
+      <div style="opacity:0.85;margin-left:8px;flex-shrink:0;">
+        <Sparkline data={sparklineData} w={72} h={24} stroke={sparkColor} fill={true} />
+      </div>
+    )}
+  </div>
+
+  <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:6px;">
+    <div class="value" style="font-size:24px;font-weight:700;letter-spacing:-0.02em;color:var(--text);font-family:var(--sans);">
+      {value}
+    </div>
+  </div>
+
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11.5px;margin-top:auto;padding-top:4px;border-top:1px dashed var(--border-2);">
+    {deltaText ? (
+      <div class="delta-badge" style={`display:inline-flex;align-items:center;gap:3px;padding:2px 6px;border-radius:4px;font-weight:600;font-size:11px;${
+        deltaDir === 'up'
+          ? 'background:oklch(0.95 0.04 145);color:oklch(0.42 0.18 145);'
+          : deltaDir === 'down'
+            ? 'background:var(--bot-soft);color:var(--bot);'
+            : 'background:var(--surface-2);color:var(--text-3);'
+      }`}>
+        {deltaDir === 'up' && <span>↑</span>}
+        {deltaDir === 'down' && <span>↓</span>}
+        <span>{deltaText}</span>
+      </div>
+    ) : (
+      <div></div>
+    )}
+
+    {deltaSub && (
+      <span class="delta-sub" style="color:var(--text-3);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+        {deltaSub}
+      </span>
+    )}
+  </div>
+
+  {contextText && (
+    <div style="font-size:10.5px;color:var(--text-3);margin-top:4px;font-family:var(--mono);">
+      {contextText}
+    </div>
+  )}
+</div>
+
+<style>
+  .kpi-card:hover {
+    border-color: var(--accent-border);
+    box-shadow: var(--shadow);
+  }
+</style>

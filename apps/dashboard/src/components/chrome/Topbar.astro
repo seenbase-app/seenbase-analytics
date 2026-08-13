@@ -1,0 +1,29 @@
+---
+export type Crumb = string | { label: string; href: string };
+
+interface Props {
+  crumbs: Crumb[];
+}
+const { crumbs } = Astro.props;
+
+function label(c: Crumb): string {
+  return typeof c === 'string' ? c : c.label;
+}
+---
+<div class="topbar">
+  <div class="crumb">
+    {crumbs.map((c, i) => {
+      const last = i === crumbs.length - 1;
+      return (
+        <span>
+          {i > 0 && <span class="sep">/</span>}
+          {last
+            ? <b>{label(c)}</b>
+            : typeof c === 'string'
+              ? label(c)
+              : <a href={c.href}>{c.label}</a>}
+        </span>
+      );
+    })}
+  </div>
+</div>

@@ -1,0 +1,23 @@
+---
+interface Props {
+  data: number[];
+  w?: number;
+  h?: number;
+  stroke?: string;
+  fill?: boolean;
+}
+const { data, w = 110, h = 28, stroke = 'var(--text)', fill = false } = Astro.props;
+
+const safeData = data.length >= 2 ? data : [...data, ...Array(Math.max(0, 2 - data.length)).fill(0)];
+const max = Math.max(...safeData, 1);
+const min = Math.min(...safeData, 0);
+const span = Math.max(max - min, 1);
+const step = w / (safeData.length - 1);
+const pts = safeData.map((v, i) => `${(i * step).toFixed(1)},${(h - ((v - min) / span) * (h - 4) - 2).toFixed(1)}`);
+const d = 'M' + pts.join(' L');
+const areaD = d + ` L${w},${h} L0,${h} Z`;
+---
+<svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style="display:block;">
+  {fill && <path d={areaD} fill={stroke} opacity="0.08" />}
+  <path d={d} fill="none" stroke={stroke} stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

@@ -1,0 +1,65 @@
+:root {
+  --bg:        #fafaf8;
+  --surface:   #ffffff;
+  --surface-2: #edeae4;
+  --surface-3: #efeee9;
+  --border:    #d4d2cc;
+  --border-2:  #e2dfd8;
+  --text:      #18181b;
+  --text-2:    #3f3f46;
+  --text-3:    #6b6b74;
+  --text-4:    #b8b6b1;
+
+  --accent:        oklch(0.62 0.16 255);
+  --accent-ink:    oklch(0.45 0.13 255);
+  --accent-soft:   oklch(0.96 0.03 255);
+  --accent-border: oklch(0.86 0.07 255);
+
+  --bot:        oklch(0.58 0.16 25);
+  --bot-soft:   oklch(0.97 0.03 25);
+  --bot-border: oklch(0.88 0.07 25);
+
+  --uniq:       oklch(0.55 0.08 232);
+  --uniq-soft:  oklch(0.96 0.02 232);
+
+  --hit:        #2a2a2e;
+  --hit-soft:   #ececea;
+
+  --radius-sm: 6px;
+  --radius:    10px;
+  --radius-lg: 14px;
+
+  --shadow-sm: 0 1px 0 rgba(20,20,15,0.04);
+  --shadow:    0 1px 2px rgba(20,20,15,0.04), 0 4px 14px rgba(20,20,15,0.04);
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+[data-theme="dark"] {
+  --bg:        #0d0e10;
+  --surface:   #16181c;
+  --surface-2: #1e2027;
+  --surface-3: #20232a;
+  --border:    #30333c;
+  --border-2:  #252830;
+  --text:      #ededed;
+  --text-2:    #c4c4ca;
+  --text-3:    #909098;
+  --text-4:    #4a4a52;
+
+  --accent:        oklch(0.70 0.15 255);
+  --accent-ink:    oklch(0.82 0.12 255);
+  --accent-soft:   oklch(0.30 0.08 255);
+  --accent-border: oklch(0.45 0.12 255);
+
+  --bot-soft:   oklch(0.28 0.06 25);
+  --bot-border: oklch(0.40 0.10 25);
+
+  --uniq-soft:  oklch(0.26 0.04 232);
+
+  --hit:        #d4d4d8;
+  --hit-soft:   #2a2c31;
+
+  --shadow:    0 1px 2px rgba(0,0,0,.4), 0 4px 14px rgba(0,0,0,.3);
+}

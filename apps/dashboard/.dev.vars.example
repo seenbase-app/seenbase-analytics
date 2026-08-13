@@ -1,0 +1,8 @@
+# Admin password (at least 12 characters)
+ADMIN_PASSWORD=change_this_to_a_secure_password_123
+
+# Session signing secret (at least 32 characters, generate with: openssl rand -hex 32)
+SESSION_SECRET=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+
+# Base URL of the tracker Worker
+TRACKER_BASE_URL=http://127.0.0.1:8787

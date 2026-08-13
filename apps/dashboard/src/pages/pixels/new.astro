@@ -1,0 +1,88 @@
+---
+import { env } from 'cloudflare:workers';
+import type { DashboardEnv } from '../../env';
+import AppShell from '../../layouts/AppShell.astro';
+import { genShortId } from '../../lib/auth';
+
+let error: string | null = null;
+const csrfToken = Astro.locals.csrfToken;
+
+if (Astro.request.method === 'POST') {
+  try {
+    const envRecord = env as unknown as DashboardEnv;
+    const db = envRecord.DB;
+
+    const formData = await Astro.request.formData();
+    const rawName = formData.get('name')?.toString() ?? '';
+    const name = rawName.trim().slice(0, 80);
+
+    if (!name || name.length < 1) {
+      error = 'Pixel name must be between 1 and 80 characters.';
+    } else {
+      let createdId: string | null = null;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const id = genShortId();
+        try {
+          await db
+            .prepare('INSERT INTO pixels (id, name, created, active) VALUES (?, ?, ?, 1)')
+            .bind(id, name, Date.now())
+            .run();
+          createdId = id;
+          break;
+        } catch (e: any) {
+          if (e?.message?.includes('UNIQUE')) continue;
+          throw e;
+        }
+      }
+
+      if (createdId) {
+        return Astro.redirect(`/pixels/${createdId}`);
+      } else {
+        error = 'Failed to generate a unique pixel ID. Please try again.';
+      }
+    }
+  } catch (e) {
+    error = 'An error occurred while creating the pixel.';
+  }
+}
+---
+<AppShell title="New Pixel — SeenBase Analytics" crumbs={[{ label: 'Workspace', href: '/dashboard' }, { label: 'Pixels', href: '/dashboard' }, 'New Pixel']} active="pixels">
+  <div class="pagehead">
+    <div>
+      <h1>Create New Pixel</h1>
+      <div class="sub">Generate a new 10-character tracking pixel endpoint</div>
+    </div>
+  </div>
+
+  <div class="card" style="max-width: 540px;">
+    {error && <div class="error" style="background:var(--bot-soft);color:var(--bot);border:1px solid var(--bot-border);padding:10px 12px;border-radius:var(--radius-sm);font-size:13px;margin-bottom:16px;">{error}</div>}
+
+    <form method="POST">
+      <input type="hidden" name="_csrf" value={csrfToken} />
+
+      <div style="margin-bottom: 20px;">
+        <label for="name" style="display:block;font-size:13px;font-weight:500;margin-bottom:6px;color:var(--text-2);">
+          Pixel Name
+        </label>
+        <input
+          type="text"
+          id="name"
+          name="name"
+          placeholder="e.g. Marketing Landing Page / Blog Article"
+          required
+          maxlength="80"
+          autofocus
+          style="width:100%;padding:10px 12px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:14px;"
+        />
+        <div style="font-size:12px;color:var(--text-3);margin-top:4px;">
+          Name should be 1 to 80 characters long.
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <a href="/dashboard" class="btn ghost">Cancel</a>
+        <button type="submit" class="btn primary">Create Pixel</button>
+      </div>
+    </form>
+  </div>
+</AppShell>

@@ -1,0 +1,266 @@
+---
+import type { PixelRow } from '@seenbase-analytics/db';
+import { env } from 'cloudflare:workers';
+import type { DashboardEnv } from '../env';
+import AppShell from '../layouts/AppShell.astro';
+import KpiCard from '../components/kpi/KpiCard.astro';
+import Sparkline from '../components/charts/Sparkline.astro';
+import ExecutiveSummaryCard from '../components/reporting/ExecutiveSummaryCard.astro';
+import { parseRange, rangeWindow, RANGE_LABEL, RANGE_KEYS, pctDelta } from '../lib/range';
+
+const envRecord = env as unknown as DashboardEnv;
+const db = envRecord.DB;
+
+const range = parseRange(Astro.url.searchParams.get('range'));
+const customFrom = Astro.url.searchParams.get('from');
+const customTo = Astro.url.searchParams.get('to');
+const win = rangeWindow(range, Date.now(), customFrom, customTo);
+
+const pixelsQuery = await db
+  .prepare(
+    `SELECT p.id, p.name, p.active, p.created,
+       COALESCE(SUM(a.hits), 0)    AS total_hits,
+       COALESCE(SUM(a.uniques), 0) AS total_uniques,
+       COALESCE(SUM(a.bots), 0)    AS total_bots
+     FROM pixels p
+     LEFT JOIN aggregates a ON a.pixel_id = p.id AND a.bucket >= ? AND a.bucket < ?
+     WHERE p.deleted_at IS NULL
+     GROUP BY p.id, p.name, p.active, p.created
+     ORDER BY p.active DESC, total_hits DESC`,
+  )
+  .bind(win.start, win.end)
+  .all<Pick<PixelRow, 'id' | 'name' | 'active' | 'created'> & {
+    total_hits: number;
+    total_uniques: number;
+    total_bots: number;
+  }>();
+
+const pixelList = pixelsQuery.results ?? [];
+
+if (Astro.url.searchParams.get('export') === 'csv') {
+  return new Response(
+    generateCsv(
+      ['id', 'name', 'active', 'created', 'hits', 'uniques', 'bots'],
+      pixelList.map(p => [
+        p.id,
+        p.name,
+        p.active ? 'active' : 'inactive',
+        new Date(p.created).toISOString(),
+        p.total_hits,
+        p.total_uniques,
+        p.total_bots,
+      ])
+    ),
+    {
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="pixels-${range}.csv"`,
+      },
+    }
+  );
+}
+
+const prevTotals = await db
+  .prepare(
+    `SELECT COALESCE(SUM(a.hits), 0)    AS h,
+            COALESCE(SUM(a.uniques), 0) AS u,
+            COALESCE(SUM(a.bots), 0)    AS b
+       FROM aggregates a
+       JOIN pixels p ON p.id = a.pixel_id
+      WHERE p.deleted_at IS NULL AND a.bucket >= ? AND a.bucket < ?`,
+  )
+  .bind(win.prevStart, win.prevEnd)
+  .first<{ h: number; u: number; b: number }>();
+
+type SparkRow = { bucket: number; hits: number };
+type LastHitRow = { last_created: number | null };
+
+const sparklineMap: Record<string, number[]> = {};
+const lastHitMap: Record<string, string> = {};
+
+if (pixelList.length > 0) {
+  const sparkStmts = pixelList.map(p =>
+    db
+      .prepare('SELECT bucket, hits FROM aggregates WHERE pixel_id = ? AND bucket >= ? AND bucket < ? ORDER BY bucket ASC LIMIT 24')
+      .bind(p.id, win.start, win.end)
+  );
+  const lastHitStmts = pixelList.map(p =>
+    db
+      .prepare('SELECT MAX(created) as last_created FROM events WHERE pixel_id = ?')
+      .bind(p.id)
+  );
+
+  const [sparkResults, lastHitResults] = await Promise.all([
+    db.batch<SparkRow>(sparkStmts),
+    db.batch<LastHitRow>(lastHitStmts),
+  ]);
+
+  pixelList.forEach((p, i) => {
+    const rows = sparkResults[i].results ?? [];
+    const vals = rows.map(r => r.hits);
+    while (vals.length < 24) vals.unshift(0);
+    sparklineMap[p.id] = vals.slice(-24);
+
+    const lh = lastHitResults[i].results?.[0]?.last_created;
+    if (lh) {
+      const diff = Date.now() - lh;
+      if (diff < 60_000) lastHitMap[p.id] = 'just now';
+      else if (diff < 3600_000) lastHitMap[p.id] = Math.floor(diff / 60_000) + 'm ago';
+      else if (diff < 86_400_000) lastHitMap[p.id] = Math.floor(diff / 3_600_000) + 'h ago';
+      else lastHitMap[p.id] = Math.floor(diff / 86_400_000) + 'd ago';
+    } else {
+      lastHitMap[p.id] = '—';
+    }
+  });
+}
+
+function fmt(n: number): string {
+  if (n >= 1_000_000) return (n/1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 10_000) return Math.round(n/1000) + 'K';
+  if (n >= 1000) return (n/1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  return String(n);
+}
+
+const totalHits = pixelList.reduce((a, p) => a + p.total_hits, 0);
+const totalUniq = pixelList.reduce((a, p) => a + p.total_uniques, 0);
+const totalBots = pixelList.reduce((a, p) => a + p.total_bots, 0);
+const activeCount = pixelList.filter(p => p.active).length;
+
+const hitsDelta = pctDelta(totalHits, prevTotals?.h ?? 0);
+const uniqDelta = pctDelta(totalUniq, prevTotals?.u ?? 0);
+const botsDelta = pctDelta(totalBots, prevTotals?.b ?? 0);
+const rangeLabel = RANGE_LABEL[range];
+
+function rangeHref(r: string): string {
+  const u = new URL(Astro.url.href);
+  u.searchParams.set('range', r);
+  u.searchParams.delete('export');
+  return u.pathname + u.search;
+}
+const exportHref = (() => {
+  const u = new URL(Astro.url.href);
+  u.searchParams.set('export', 'csv');
+  return u.pathname + u.search;
+})();
+---
+<AppShell title="Pixels — SeenBase Analytics" crumbs={[{ label: 'Workspace', href: '/dashboard' }, 'Pixels']} active="pixels">
+  <div class="pagehead">
+    <div>
+      <h1>Pixels</h1>
+      <div class="sub">{pixelList.length} pixel{pixelList.length !== 1 ? 's' : ''} · {fmt(totalHits)} hits in {rangeLabel}</div>
+    </div>
+    <div class="actions">
+      <div class="seg">
+        {RANGE_KEYS.map(r => (
+          <a href={rangeHref(r)} class={r === range ? 'active' : ''}>{r}</a>
+        ))}
+        <a href={rangeHref('custom')} class={range === 'custom' ? 'active' : ''}>custom</a>
+      </div>
+      <a href="/pixels/new" class="btn primary"><span class="plus">+</span>New pixel</a>
+    </div>
+  </div>
+
+  {range === 'custom' && (
+    <form method="GET" class="cpicker card" style="padding:12px 16px;flex-direction:row;">
+      <input type="hidden" name="range" value="custom" />
+      <span class="cpicker-label" style="font-size:12px;color:var(--text-3);">From:</span>
+      <input type="date" name="from" value={customFrom || ''} class="cpicker-input" required />
+      <span class="cpicker-label" style="font-size:12px;color:var(--text-3);">To:</span>
+      <input type="date" name="to" value={customTo || ''} class="cpicker-input" required />
+      <button type="submit" class="btn primary" style="padding:4px 10px;font-size:12px;">Apply range</button>
+    </form>
+  )}
+
+  <div class="kpis">
+    <KpiCard label={`Total hits · ${range}`} value={fmt(totalHits)} deltaText={hitsDelta.text} deltaDir={hitsDelta.dir} deltaSub={`vs prev ${range}`} sparklineData={pixelList.flatMap(p => sparklineMap[p.id] || []).slice(0, 24)} />
+    <KpiCard label="Unique visitors" value={fmt(totalUniq)} deltaText={uniqDelta.text} deltaDir={uniqDelta.dir} deltaSub={`vs prev ${range}`} />
+    <KpiCard label="Bots filtered" value={fmt(totalBots)} deltaText={botsDelta.text} deltaDir={botsDelta.dir} deltaSub={`vs prev ${range}`} />
+    <KpiCard label="Active pixels" value={`${activeCount}`} deltaSub={`/ ${pixelList.length} total`} />
+  </div>
+
+  <ExecutiveSummaryCard
+    totalHits={totalHits}
+    totalUniq={totalUniq}
+    totalBots={totalBots}
+    hitsDeltaText={hitsDelta.text}
+    hitsDeltaDir={hitsDelta.dir}
+    topCountry="All Locations"
+    topBrowser="All Browsers"
+    rangeLabel={rangeLabel}
+  />
+
+  <div class="card">
+    <div class="cardhead">
+      <h3>All pixels</h3>
+      <span class="sub">Sorted by active status & hits</span>
+      <div class="right">
+        <a href={exportHref} class="btn ghost" style="font-size:12px;">Export CSV</a>
+      </div>
+    </div>
+
+    {pixelList.length === 0 ? (
+      <div style="padding:40px 18px;text-align:center;color:var(--text-3);">
+        <div style="font-size:14px;font-weight:500;margin-bottom:8px;">No pixels yet</div>
+        <div style="font-size:12.5px;margin-bottom:16px;">Create your first tracking pixel to start receiving hits.</div>
+        <a href="/pixels/new" class="btn primary"><span class="plus">+</span>Create your first pixel</a>
+      </div>
+    ) : (
+      <div class="table-wrap">
+        <table class="t">
+          <thead>
+            <tr>
+              <th style="width:34%">Pixel</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th>Trend</th>
+              <th class="num">Hits</th>
+              <th class="num">Unique</th>
+              <th class="num">Bots</th>
+              <th>Last hit</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pixelList.map(p => {
+              const created = new Date(p.created).toISOString().slice(0, 10);
+              const spark = sparklineMap[p.id] ?? Array(24).fill(0);
+              const lastHit = lastHitMap[p.id] ?? '—';
+              return (
+                <tr style="cursor:pointer;" onclick={`location.href='/pixels/${p.id}'`}>
+                  <td>
+                    <div style="display:flex;align-items:center;gap:10px;">
+                      <div style="width:28px;height:28px;border-radius:6px;background:var(--surface-2);border:1px solid var(--border);display:grid;place-items:center;font-family:var(--mono);font-size:10px;color:var(--text-2);flex-shrink:0;">
+                        {p.name.slice(0, 2).toUpperCase()}
+                      </div>
+                      <div style="display:flex;flex-direction:column;">
+                        <span style="font-weight:500;">{p.name}</span>
+                        <span class="mono" style="color:var(--text-3);font-size:11px;">{p.id}</span>
+                      </div>
+                    </div>
+                  </td>
+                  <td>
+                    {p.active
+                      ? <span class="pill active"><span class="dot"></span>active</span>
+                      : <span class="pill inactive"><span class="dot"></span>inactive</span>
+                    }
+                  </td>
+                  <td class="muted mono" style="font-size:11.5px;">{created}</td>
+                  <td>
+                    <Sparkline
+                      data={spark}
+                      stroke={p.active ? 'var(--text)' : 'var(--text-3)'}
+                      fill={true}
+                    />
+                  </td>
+                  <td class="num">{fmt(p.total_hits)}</td>
+                  <td class="num muted">{fmt(p.total_uniques)}</td>
+                  <td class="num muted">{fmt(p.total_bots)}</td>
+                  <td class="muted" style="font-size:11.5px;">{lastHit}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </div>
+</AppShell>

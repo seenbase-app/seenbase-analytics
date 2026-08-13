@@ -1,0 +1,71 @@
+---
+interface Props {
+  totalHits: number;
+  totalUniq: number;
+  totalBots: number;
+  hitsDeltaText?: string;
+  hitsDeltaDir?: 'up' | 'down' | 'neutral';
+  topCountry?: string;
+  topBrowser?: string;
+  rangeLabel: string;
+}
+const {
+  totalHits,
+  totalUniq,
+  totalBots,
+  hitsDeltaText = '0%',
+  hitsDeltaDir = 'neutral',
+  topCountry = 'United States',
+  topBrowser = 'Chrome',
+  rangeLabel
+} = Astro.props;
+
+function fmt(n: number): string {
+  if (n >= 1_000_000) return (n/1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 10_000) return Math.round(n/1000) + 'K';
+  if (n >= 1000) return (n/1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  return String(n);
+}
+
+const botPct = totalHits > 0 ? ((totalBots / totalHits) * 100).toFixed(1) : '0';
+const uniqPct = totalHits > 0 ? ((totalUniq / totalHits) * 100).toFixed(1) : '0';
+---
+<div class="card exec-summary-card" style="border:1px solid var(--accent-border);border-radius:var(--radius);background:linear-gradient(135deg, var(--surface) 0%, var(--surface-2) 100%);padding:16px 20px;box-shadow:var(--shadow-sm);margin-bottom:18px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="font-size:16px;">📄</span>
+      <h3 style="margin:0;font-size:14px;font-weight:600;color:var(--text);">Executive Report Summary</h3>
+      <span class="pill" style="font-size:10.5px;background:var(--accent-soft);color:var(--accent-ink);border-color:var(--accent-border);">
+        Auto-Generated Digest
+      </span>
+    </div>
+    <span style="font-size:11.5px;color:var(--text-3);font-family:var(--mono);">{rangeLabel}</span>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:20px;font-size:12.5px;line-height:1.6;color:var(--text-2);">
+    <div style="border-right:1px solid var(--border-2);padding-right:16px;">
+      <div style="font-weight:600;color:var(--text);margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+        <span>Traffic Trend</span>
+        {hitsDeltaDir === 'up' && <span style="color:oklch(0.55 0.18 145);font-size:11px;font-weight:700;">↑ {hitsDeltaText}</span>}
+        {hitsDeltaDir === 'down' && <span style="color:var(--bot);font-size:11px;font-weight:700;">↓ {hitsDeltaText}</span>}
+      </div>
+      <div>
+        Total volume reached <strong style="color:var(--text);">{fmt(totalHits)} hits</strong> with <strong style="color:var(--text);">{fmt(totalUniq)} unique visitors</strong> ({uniqPct}% unique ratio) over {rangeLabel}.
+      </div>
+    </div>
+
+    <div style="border-right:1px solid var(--border-2);padding-right:16px;">
+      <div style="font-weight:600;color:var(--text);margin-bottom:4px;">Security & Filtering</div>
+      <div>
+        Automated bot protection filtered <strong style="color:var(--bot);">{fmt(totalBots)} bot requests</strong> ({botPct}% of total hits).
+      </div>
+    </div>
+
+    <div>
+      <div style="font-weight:600;color:var(--text);margin-bottom:4px;">Top Channels</div>
+      <div>
+        Leading origin country is <strong style="color:var(--text);">{topCountry}</strong>, with <strong style="color:var(--text);">{topBrowser}</strong> as the dominant client browser.
+      </div>
+    </div>
+  </div>
+</div>

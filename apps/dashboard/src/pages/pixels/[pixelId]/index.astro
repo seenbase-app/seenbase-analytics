@@ -1,0 +1,459 @@
+---
+import type { AggregateRow, EventRow, PixelRow } from '@seenbase-analytics/db';
+import { env } from 'cloudflare:workers';
+import type { DashboardEnv } from '../../../env';
+import AppShell from '../../../layouts/AppShell.astro';
+import KpiCard from '../../../components/kpi/KpiCard.astro';
+import LineChart from '../../../components/charts/LineChart.astro';
+import BarChart24h from '../../../components/charts/BarChart24h.astro';
+import BreakdownCard from '../../../components/breakdown/BreakdownCard.astro';
+import ExecutiveSummaryCard from '../../../components/reporting/ExecutiveSummaryCard.astro';
+import { parseRange, rangeWindow, RANGE_LABEL, RANGE_KEYS, pctDelta } from '../../../lib/range';
+
+const envRecord = env as unknown as DashboardEnv;
+const db = envRecord.DB;
+const rawTrackerUrl = envRecord.TRACKER_BASE_URL;
+
+if (!rawTrackerUrl) {
+  return new Response('Server configuration error: TRACKER_BASE_URL binding is missing', { status: 500 });
+}
+const trackerBaseUrl = rawTrackerUrl.trim().replace(/\/+$/, '');
+if (!trackerBaseUrl.startsWith('http://') && !trackerBaseUrl.startsWith('https://')) {
+  return new Response('Server configuration error: TRACKER_BASE_URL must be an http or https URL', { status: 500 });
+}
+
+const pixelId = Astro.params.pixelId!;
+const csrfToken = Astro.locals.csrfToken;
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData();
+  const action = form.get('action');
+
+  if (action === 'deactivate') {
+    await db
+      .prepare('UPDATE pixels SET active = 0 WHERE id = ? AND deleted_at IS NULL')
+      .bind(pixelId)
+      .run();
+    return Astro.redirect(`/pixels/${pixelId}`);
+  }
+
+  if (action === 'reactivate') {
+    await db
+      .prepare('UPDATE pixels SET active = 1 WHERE id = ? AND deleted_at IS NULL')
+      .bind(pixelId)
+      .run();
+    return Astro.redirect(`/pixels/${pixelId}`);
+  }
+
+  if (action === 'rename') {
+    const newName = (form.get('name') as string | null)?.trim();
+    if (newName && newName.length >= 1 && newName.length <= 80) {
+      await db
+        .prepare('UPDATE pixels SET name = ? WHERE id = ? AND deleted_at IS NULL')
+        .bind(newName, pixelId)
+        .run();
+    }
+    return Astro.redirect(`/pixels/${pixelId}`);
+  }
+
+  if (action === 'delete') {
+    await db
+      .prepare('UPDATE pixels SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL')
+      .bind(Date.now(), pixelId)
+      .run();
+    return Astro.redirect('/dashboard');
+  }
+}
+
+const pixel = await db
+  .prepare('SELECT id, name, active, created FROM pixels WHERE id = ? AND deleted_at IS NULL')
+  .bind(pixelId)
+  .first<Pick<PixelRow, 'id' | 'name' | 'active' | 'created'>>();
+
+if (!pixel) return Astro.redirect('/dashboard');
+
+const pixelUrl = `${trackerBaseUrl}/p/${pixel.id}.gif`;
+const embedSnippet = `<img src="${pixelUrl}" width="1" height="1" alt="" style="display:none" />`;
+
+const range = parseRange(Astro.url.searchParams.get('range'));
+const customFrom = Astro.url.searchParams.get('from');
+const customTo = Astro.url.searchParams.get('to');
+const win = rangeWindow(range, Date.now(), customFrom, customTo);
+
+const oneDayAgo = Date.now() - 24 * 3600 * 1000;
+const fiveMinAgo = Date.now() - 300_000;
+
+function parseBrowser(ua: string | null): string {
+  if (!ua) return '—';
+  if (/Edg\//.test(ua)) return 'Edge';
+  if (/OPR\/|Opera/.test(ua)) return 'Opera';
+  if (/Firefox\//.test(ua)) return 'Firefox';
+  if (/Chrome\//.test(ua)) return 'Chrome';
+  if (/Safari\//.test(ua)) return 'Safari';
+  return 'Other';
+}
+
+function parseOS(ua: string | null): string {
+  if (!ua) return '—';
+  if (/iPhone|iPad/.test(ua)) return 'iOS';
+  if (/Android/.test(ua)) return 'Android';
+  if (/Windows/.test(ua)) return 'Windows';
+  if (/Mac OS X/.test(ua)) return 'macOS';
+  if (/Linux/.test(ua)) return 'Linux';
+  return 'Other';
+}
+
+type AggRow = Pick<AggregateRow, 'bucket' | 'hits' | 'uniques' | 'bots'>;
+type RightNowRow = { cnt: number };
+type CountryRow = { country: string; cnt: number };
+type CityRow = { city: string; cnt: number };
+type IspRow = { isp: string; asn: string | null; cnt: number };
+type UtmRow = { v: string; cnt: number };
+type EventSampleRow = Pick<EventRow, 'ua' | 'lang' | 'is_bot'>;
+type PrevTotalsRow = { h: number; u: number; b: number };
+
+const [
+  seriesResult,
+  hours24Result,
+  rightNowResult,
+  countryResult,
+  cityResult,
+  ispResult,
+  utmSourceResult,
+  utmMediumResult,
+  utmCampaignResult,
+  utmTermResult,
+  utmContentResult,
+  eventSampleResult,
+  prevTotalsResult,
+  prevSeriesResult,
+] = await db.batch<
+  AggRow | RightNowRow | CountryRow | CityRow | IspRow | UtmRow | EventSampleRow | PrevTotalsRow
+>([
+  db.prepare('SELECT bucket, hits, uniques, bots FROM aggregates WHERE pixel_id=? AND bucket >= ? AND bucket < ? ORDER BY bucket ASC').bind(pixelId, win.start, win.end),
+  db.prepare('SELECT bucket, hits, uniques, bots FROM aggregates WHERE pixel_id=? AND bucket >= ? AND bucket < ? ORDER BY bucket ASC').bind(pixelId, oneDayAgo, Date.now()),
+  db.prepare('SELECT COUNT(*) as cnt FROM events WHERE pixel_id=? AND created >= ?').bind(pixelId, fiveMinAgo),
+  db.prepare('SELECT country, COUNT(*) as cnt FROM events WHERE pixel_id=? AND created>=? AND created<? AND is_bot=0 AND country IS NOT NULL GROUP BY country ORDER BY cnt DESC LIMIT 10').bind(pixelId, win.start, win.end),
+  db.prepare('SELECT city, COUNT(*) as cnt FROM events WHERE pixel_id=? AND created>=? AND created<? AND is_bot=0 AND city IS NOT NULL GROUP BY city ORDER BY cnt DESC LIMIT 10').bind(pixelId, win.start, win.end),
+  db.prepare('SELECT as_org as isp, asn, COUNT(*) as cnt FROM events WHERE pixel_id=? AND created>=? AND created<? AND is_bot=0 AND as_org IS NOT NULL GROUP BY as_org ORDER BY cnt DESC LIMIT 10').bind(pixelId, win.start, win.end),
+  db.prepare("SELECT json_extract(meta,'$.utm_source') as v, COUNT(*) as cnt FROM events WHERE pixel_id=? AND created>=? AND created<? AND json_extract(meta,'$.utm_source') IS NOT NULL GROUP BY v ORDER BY cnt DESC LIMIT 10").bind(pixelId, win.start, win.end),
+  db.prepare("SELECT json_extract(meta,'$.utm_medium') as v, COUNT(*) as cnt FROM events WHERE pixel_id=? AND created>=? AND created<? AND json_extract(meta,'$.utm_medium') IS NOT NULL GROUP BY v ORDER BY cnt DESC LIMIT 10").bind(pixelId, win.start, win.end),
+  db.prepare("SELECT json_extract(meta,'$.utm_campaign') as v, COUNT(*) as cnt FROM events WHERE pixel_id=? AND created>=? AND created<? AND json_extract(meta,'$.utm_campaign') IS NOT NULL GROUP BY v ORDER BY cnt DESC LIMIT 10").bind(pixelId, win.start, win.end),
+  db.prepare("SELECT json_extract(meta,'$.utm_term') as v, COUNT(*) as cnt FROM events WHERE pixel_id=? AND created>=? AND created<? AND json_extract(meta,'$.utm_term') IS NOT NULL GROUP BY v ORDER BY cnt DESC LIMIT 10").bind(pixelId, win.start, win.end),
+  db.prepare("SELECT json_extract(meta,'$.utm_content') as v, COUNT(*) as cnt FROM events WHERE pixel_id=? AND created>=? AND created<? AND json_extract(meta,'$.utm_content') IS NOT NULL GROUP BY v ORDER BY cnt DESC LIMIT 10").bind(pixelId, win.start, win.end),
+  db.prepare('SELECT ua, lang, is_bot FROM events WHERE pixel_id=? AND created>=? AND created<? AND is_bot=0 LIMIT 1000').bind(pixelId, win.start, win.end),
+  db.prepare('SELECT COALESCE(SUM(hits),0) AS h, COALESCE(SUM(uniques),0) AS u, COALESCE(SUM(bots),0) AS b FROM aggregates WHERE pixel_id=? AND bucket >= ? AND bucket < ?').bind(pixelId, win.prevStart, win.prevEnd),
+  db.prepare('SELECT bucket, hits, uniques, bots FROM aggregates WHERE pixel_id=? AND bucket >= ? AND bucket < ? ORDER BY bucket ASC').bind(pixelId, win.prevStart, win.prevEnd),
+]);
+
+const prevTotals = (prevTotalsResult.results?.[0] as PrevTotalsRow) ?? { h: 0, u: 0, b: 0 };
+const seriesRaw = (seriesResult.results ?? []) as AggRow[];
+const prevSeriesRaw = (prevSeriesResult.results ?? []) as AggRow[];
+
+const seriesData = seriesRaw.map(r => ({
+  hits: r.hits,
+  unique: r.uniques,
+  bots: r.bots,
+}));
+const prevSeriesData = prevSeriesRaw.map(r => ({
+  hits: r.hits,
+  unique: r.uniques,
+  bots: r.bots,
+}));
+
+if (Astro.url.searchParams.get('export') === 'csv') {
+  return new Response(
+    generateCsv(
+      ['timestamp', 'hits', 'uniques', 'bots'],
+      seriesRaw.map(r => [
+        new Date(r.bucket).toISOString(),
+        r.hits,
+        r.uniques,
+        r.bots,
+      ])
+    ),
+    {
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="pixel-${pixel.id}-${range}.csv"`,
+      },
+    }
+  );
+}
+
+const hours24Raw = (hours24Result.results ?? []) as AggRow[];
+const hours24: { hits: number; bots: number }[] = Array.from({ length: 24 }, () => ({ hits: 0, bots: 0 }));
+for (const r of hours24Raw) {
+  const hourOffset = Math.floor((r.bucket - oneDayAgo) / 3_600_000);
+  if (hourOffset >= 0 && hourOffset < 24) {
+    hours24[hourOffset].hits += r.hits;
+    hours24[hourOffset].bots += r.bots;
+  }
+}
+
+const rightNow = ((rightNowResult.results?.[0] as RightNowRow)?.cnt) ?? 0;
+const totalHits = seriesData.reduce((a, d) => a + d.hits, 0);
+const totalUniq = seriesData.reduce((a, d) => a + d.unique, 0);
+const totalBots = seriesData.reduce((a, d) => a + d.bots, 0);
+
+const hitsDelta = pctDelta(totalHits, prevTotals.h);
+const uniqDelta = pctDelta(totalUniq, prevTotals.u);
+const botsDelta = pctDelta(totalBots, prevTotals.b);
+const rangeLabel = RANGE_LABEL[range];
+
+function rangeHref(r: string): string {
+  const u = new URL(Astro.url.href);
+  u.searchParams.set('range', r);
+  return u.pathname + u.search;
+}
+const exportHref = (() => {
+  const u = new URL(Astro.url.href);
+  u.searchParams.set('export', 'csv');
+  return u.pathname + u.search;
+})();
+
+function buildBreakdownRows(rows: { label: string; val: number }[]) {
+  const maxVal = rows[0]?.val ?? 1;
+  return rows.map(r => ({
+    label: r.label,
+    val: r.val,
+    pct: maxVal > 0 ? (r.val / maxVal) * 100 : 0,
+  }));
+}
+
+const countryRows = buildBreakdownRows(((countryResult.results ?? []) as CountryRow[]).map(r => ({ label: r.country, val: r.cnt })));
+const countryRowsWithCode = ((countryResult.results ?? []) as CountryRow[]).map((r, i) => ({
+  ...countryRows[i],
+  code: r.country,
+}));
+const cityRows = buildBreakdownRows(((cityResult.results ?? []) as CityRow[]).map(r => ({ label: r.city, val: r.cnt })));
+const ispRows = buildBreakdownRows(((ispResult.results ?? []) as IspRow[]).map(r => ({ label: r.isp, val: r.cnt })));
+const ispRowsWithAsn = ((ispResult.results ?? []) as IspRow[]).map((r, i) => ({
+  ...ispRows[i],
+  asn: r.asn ?? undefined,
+}));
+
+const utmSourceRows   = buildBreakdownRows(((utmSourceResult.results   ?? []) as UtmRow[]).map(r => ({ label: r.v, val: r.cnt })));
+const utmMediumRows   = buildBreakdownRows(((utmMediumResult.results   ?? []) as UtmRow[]).map(r => ({ label: r.v, val: r.cnt })));
+const utmCampaignRows = buildBreakdownRows(((utmCampaignResult.results ?? []) as UtmRow[]).map(r => ({ label: r.v, val: r.cnt })));
+const utmTermRows     = buildBreakdownRows(((utmTermResult.results     ?? []) as UtmRow[]).map(r => ({ label: r.v, val: r.cnt })));
+const utmContentRows  = buildBreakdownRows(((utmContentResult.results  ?? []) as UtmRow[]).map(r => ({ label: r.v, val: r.cnt })));
+
+const events = (eventSampleResult.results ?? []) as EventSampleRow[];
+const browserMap: Record<string, number> = {};
+const osMap: Record<string, number> = {};
+const langMap: Record<string, number> = {};
+
+for (const e of events) {
+  const b = parseBrowser(e.ua);
+  const o = parseOS(e.ua);
+  browserMap[b] = (browserMap[b] ?? 0) + 1;
+  osMap[o] = (osMap[o] ?? 0) + 1;
+  if (e.lang) langMap[e.lang] = (langMap[e.lang] ?? 0) + 1;
+}
+
+function toBreakdownRows(map: Record<string, number>) {
+  const sorted = Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  const maxVal = sorted[0]?.[1] ?? 1;
+  return sorted.map(([label, val]) => ({
+    label,
+    val,
+    pct: maxVal > 0 ? (val / maxVal) * 100 : 0,
+  }));
+}
+
+const browserRows = toBreakdownRows(browserMap);
+const osRows = toBreakdownRows(osMap);
+const langRows = toBreakdownRows(langMap);
+
+function fmt(n: number): string {
+  if (n >= 1_000_000) return (n/1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 10_000) return Math.round(n/1000) + 'K';
+  if (n >= 1000) return (n/1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  return String(n);
+}
+---
+<AppShell
+  title={`${pixel.name} — SeenBase Analytics`}
+  crumbs={[{ label: 'Workspace', href: '/dashboard' }, { label: 'Pixels', href: '/dashboard' }, pixel.name]}
+  active="pixels"
+>
+  <div class="pagehead" style="align-items:flex-start;">
+    <div style="display:flex;flex-direction:column;gap:10px;flex:1;min-width:0;">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <h1>{pixel.name}</h1>
+        {pixel.active
+          ? <span class="pill active"><span class="dot"></span>active</span>
+          : <span class="pill inactive"><span class="dot"></span>paused</span>
+        }
+      </div>
+      <div class="sub" style="display:flex;align-items:center;gap:10px;font-family:var(--mono);">
+        <span>ID: {pixel.id}</span>
+        <span>·</span>
+        <span>Created {new Date(pixel.created).toISOString().slice(0, 10)}</span>
+      </div>
+    </div>
+    <div class="actions">
+      <div class="seg">
+        {RANGE_KEYS.map(r => (
+          <a href={rangeHref(r)} class={r === range ? 'active' : ''}>{r}</a>
+        ))}
+        <a href={rangeHref('custom')} class={range === 'custom' ? 'active' : ''}>custom</a>
+      </div>
+      <a href={`/pixels/${pixel.id}/hits`} class="btn">View live hits</a>
+      <a href={exportHref} class="btn ghost">Export CSV</a>
+
+      {pixel.active ? (
+        <form method="POST" style="display:inline;">
+          <input type="hidden" name="_csrf" value={csrfToken} />
+          <input type="hidden" name="action" value="deactivate" />
+          <button type="submit" class="btn ghost">Pause</button>
+        </form>
+      ) : (
+        <form method="POST" style="display:inline;">
+          <input type="hidden" name="_csrf" value={csrfToken} />
+          <input type="hidden" name="action" value="reactivate" />
+          <button type="submit" class="btn primary">Reactivate</button>
+        </form>
+      )}
+
+      <button id="delete-pixel-btn" class="btn danger" type="button">Delete</button>
+    </div>
+  </div>
+
+  <div class="card" style="padding:12px 16px;background:var(--surface-3);border:1px solid var(--border-2);font-size:12px;">
+    <div style="display:flex;align-items:center;gap:12px;color:var(--text-2);">
+      <span style="font-weight:600;">Ingestion Status:</span>
+      <span class="mono">pixel request → raw event (D1) → hourly aggregate (cron)</span>
+      <span style="margin-left:auto;color:var(--text-3);" class="mono">Active 5m: {rightNow} hits</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="cardhead">
+      <h3>Tracking Image Snippet</h3>
+      <span class="sub">1×1 transparent GIF endpoint</span>
+    </div>
+    <div class="codeblock">
+      <span class="url">{embedSnippet}</span>
+      <button class="btn ghost copy-btn" data-copy={embedSnippet} type="button">Copy HTML</button>
+    </div>
+    <div style="font-size:12px;color:var(--text-3);">
+      Direct image URL: <code class="mono" style="color:var(--text);">{pixelUrl}</code>
+    </div>
+  </div>
+
+  {range === 'custom' && (
+    <form method="GET" class="cpicker card" style="padding:12px 16px;flex-direction:row;">
+      <input type="hidden" name="range" value="custom" />
+      <span class="cpicker-label" style="font-size:12px;color:var(--text-3);">From:</span>
+      <input type="date" name="from" value={customFrom || ''} class="cpicker-input" required />
+      <span class="cpicker-label" style="font-size:12px;color:var(--text-3);">To:</span>
+      <input type="date" name="to" value={customTo || ''} class="cpicker-input" required />
+      <button type="submit" class="btn primary" style="padding:4px 10px;font-size:12px;">Apply range</button>
+    </form>
+  )}
+
+  <div class="kpis">
+    <KpiCard label={`Hits · ${rangeLabel}`} value={fmt(totalHits)} deltaText={hitsDelta.text} deltaDir={hitsDelta.dir} deltaSub={`vs prev ${range}`} />
+    <KpiCard label="Unique visitors" value={fmt(totalUniq)} deltaText={uniqDelta.text} deltaDir={uniqDelta.dir} deltaSub={`vs prev ${range}`} />
+    <KpiCard label="Bots filtered" value={fmt(totalBots)} deltaText={botsDelta.text} deltaDir={botsDelta.dir} deltaSub={`vs prev ${range}`} />
+    <KpiCard label="Right now (5m)" value={`${rightNow}`} deltaSub="active requests" />
+  </div>
+
+  <div class="card">
+    <div class="cardhead">
+      <h3>Hits & Visitors Trend</h3>
+      <div class="legend" style="margin-left:auto;">
+        <div class="item"><span class="sw hit"></span>Hits</div>
+        <div class="item"><span class="sw uniq"></span>Uniques</div>
+        <div class="item"><span class="sw bot"></span>Bots</div>
+      </div>
+    </div>
+    <LineChart data={seriesData} prevData={prevSeriesData} />
+  </div>
+
+  <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:14px;">
+    <div class="card">
+      <div class="cardhead">
+        <h3>24-Hour Distribution</h3>
+        <span class="sub">Hourly volume</span>
+      </div>
+      <BarChart24h data={hours24} />
+    </div>
+
+    <div class="card" style="justify-content:center;align-items:center;text-align:center;">
+      <div style="font-size:36px;font-weight:700;font-family:var(--mono);color:var(--text);">{rightNow}</div>
+      <div style="font-size:13px;font-weight:500;color:var(--text-2);margin-top:4px;">Active Visitors Right Now</div>
+      <div style="font-size:11.5px;color:var(--text-3);margin-top:2px;">Events received in the last 5 minutes</div>
+    </div>
+  </div>
+
+  <ExecutiveSummaryCard
+    totalHits={totalHits}
+    totalUniq={totalUniq}
+    totalBots={totalBots}
+    hitsDeltaText={hitsDelta.text}
+    hitsDeltaDir={hitsDelta.dir}
+    topCountry={countryRows[0]?.label || 'Direct'}
+    topBrowser={browserRows[0]?.label || 'Direct'}
+    rangeLabel={rangeLabel}
+  />
+
+  <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(300px, 1fr));gap:14px;">
+    <BreakdownCard title="Top Countries" rows={countryRowsWithCode} showCode={true} />
+    <BreakdownCard title="Top Cities" rows={cityRows} />
+    <BreakdownCard title="Networks / ISPs" rows={ispRowsWithAsn} showAsn={true} />
+    <BreakdownCard title="Browsers" rows={browserRows} />
+    <BreakdownCard title="Operating Systems" rows={osRows} />
+    <BreakdownCard title="Languages" rows={langRows} />
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(300px, 1fr));gap:14px;">
+    <BreakdownCard title="UTM Source" rows={utmSourceRows} />
+    <BreakdownCard title="UTM Medium" rows={utmMediumRows} />
+    <BreakdownCard title="UTM Campaign" rows={utmCampaignRows} />
+    <BreakdownCard title="UTM Term" rows={utmTermRows} />
+    <BreakdownCard title="UTM Content" rows={utmContentRows} />
+  </div>
+
+  <dialog id="delete-modal" class="del-modal card" style="display:none;padding:24px;max-width:440px;">
+    <div style="font-size:16px;font-weight:600;margin-bottom:8px;">Delete Pixel</div>
+    <p style="font-size:13px;color:var(--text-2);margin:0 0 16px 0;">
+      Are you sure you want to soft-delete <strong>{pixel.name}</strong>? Incoming requests to this pixel will be dropped.
+    </p>
+    <form method="POST" style="display:flex;gap:10px;justify-content:flex-end;">
+      <input type="hidden" name="_csrf" value={csrfToken} />
+      <input type="hidden" name="action" value="delete" />
+      <button type="button" id="cancel-delete-btn" class="btn ghost">Cancel</button>
+      <button type="submit" class="btn danger">Confirm Delete</button>
+    </form>
+  </dialog>
+
+  <script is:inline>
+    document.querySelectorAll('.copy-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const text = btn.getAttribute('data-copy');
+        if (text) {
+          navigator.clipboard.writeText(text);
+          const orig = btn.textContent;
+          btn.textContent = 'Copied!';
+          setTimeout(() => { btn.textContent = orig; }, 2000);
+        }
+      });
+    });
+
+    const delBtn = document.getElementById('delete-pixel-btn');
+    const delModal = document.getElementById('delete-modal');
+    const cancelBtn = document.getElementById('cancel-delete-btn');
+
+    if (delBtn && delModal && cancelBtn) {
+      delBtn.addEventListener('click', () => {
+        delModal.style.display = 'block';
+      });
+      cancelBtn.addEventListener('click', () => {
+        delModal.style.display = 'none';
+      });
+    }
+  </script>
+</AppShell>

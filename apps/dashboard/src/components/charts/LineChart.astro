@@ -1,0 +1,133 @@
+---
+interface DataPoint {
+  hits: number;
+  unique: number;
+  bots: number;
+  label?: string;
+}
+interface Props {
+  data: DataPoint[];
+  prevData?: DataPoint[];
+  w?: number;
+  h?: number;
+  accent?: string;
+  id?: string;
+}
+const { data, prevData, w = 920, h = 260, id = 'chart-' + Math.random().toString(36).slice(2, 7) } = Astro.props;
+
+const pad = { l: 44, r: 16, t: 18, b: 28 };
+const iw = w - pad.l - pad.r;
+const ih = h - pad.t - pad.b;
+
+const allHits = [...data.map(d => d.hits), ...(prevData?.map(d => d.hits) ?? [])];
+const maxV = allHits.length > 0 ? Math.max(...allHits, 1) * 1.12 : 1;
+const step = data.length > 1 ? iw / (data.length - 1) : iw;
+
+function linePath(pts: DataPoint[], key: 'hits' | 'unique' | 'bots'): string {
+  if (pts.length === 0) return '';
+  return 'M' + pts
+    .map((d, i) => `${(pad.l + i * step).toFixed(1)},${(pad.t + ih - (d[key] / maxV) * ih).toFixed(1)}`)
+    .join(' L');
+}
+
+function areaPath(pts: DataPoint[], key: 'hits' | 'unique' | 'bots'): string {
+  if (pts.length === 0) return '';
+  const line = pts
+    .map((d, i) => `${(pad.l + i * step).toFixed(1)},${(pad.t + ih - (d[key] / maxV) * ih).toFixed(1)}`)
+    .join(' L');
+  const lastX = (pad.l + (pts.length - 1) * step).toFixed(1);
+  return `M${pad.l},${pad.t + ih} L${line} L${lastX},${pad.t + ih} Z`;
+}
+
+function fmt(n: number): string {
+  if (n >= 1_000_000) return (n/1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 10_000) return Math.round(n/1000) + 'K';
+  if (n >= 1000) return (n/1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  return String(n);
+}
+
+const chartDataJson = JSON.stringify(data.map((d, i) => ({
+  x: pad.l + i * step,
+  hits: d.hits,
+  unique: d.unique,
+  bots: d.bots,
+  label: d.label || `Point ${i + 1}`
+})));
+---
+<div class="line-chart-wrapper" id={id} style="position:relative;width:100%;user-select:none;">
+  <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style="display:block;width:100%;height:auto;overflow:visible;">
+    {Array.from({ length: 4 }).map((_, i) => {
+      const y = pad.t + (ih / 3) * i;
+      const v = maxV * (1 - i / 3);
+      return (
+        <g>
+          <line x1={pad.l} y1={y} x2={w - pad.r} y2={y} stroke="var(--border-2)" stroke-dasharray="3,3" />
+          <text x={pad.l - 6} y={y + 4} text-anchor="end" fill="var(--text-3)" font-size="10" font-family="var(--mono)">
+            {fmt(v)}
+          </text>
+        </g>
+      );
+    })}
+
+    {prevData && prevData.length > 0 && (
+      <path d={linePath(prevData, 'hits')} fill="none" stroke="var(--text-4)" stroke-width="1.5" stroke-dasharray="4,4" />
+    )}
+
+    {data.length > 0 && (
+      <>
+        <path d={areaPath(data, 'hits')} fill="var(--hit)" opacity="0.04" />
+        <path d={linePath(data, 'unique')} fill="none" stroke="var(--uniq)" stroke-width="1.8" />
+        <path d={linePath(data, 'bots')} fill="none" stroke="var(--bot)" stroke-width="1.5" stroke-dasharray="2,2" />
+        <path d={linePath(data, 'hits')} fill="none" stroke="var(--hit)" stroke-width="2.2" />
+      </>
+    )}
+  </svg>
+
+  <div class="chart-tooltip" style="display:none;position:absolute;top:10px;pointer-events:none;background:rgba(22, 24, 28, 0.92);backdrop-filter:blur(8px);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;box-shadow:var(--shadow);z-index:20;font-size:12px;color:#ffffff;min-width:140px;">
+    <div class="tt-label" style="font-weight:600;margin-bottom:4px;font-family:var(--mono);"></div>
+    <div style="display:flex;justify-content:space-between;gap:12px;"><span>Hits:</span><span class="tt-hits" style="font-family:var(--mono);font-weight:600;"></span></div>
+    <div style="display:flex;justify-content:space-between;gap:12px;color:var(--uniq);"><span>Uniques:</span><span class="tt-uniq" style="font-family:var(--mono);"></span></div>
+    <div style="display:flex;justify-content:space-between;gap:12px;color:var(--bot);"><span>Bots:</span><span class="tt-bots" style="font-family:var(--mono);"></span></div>
+  </div>
+</div>
+
+<script is:inline define:vars={{ id, chartDataJson }}>
+  (function() {
+    const wrap = document.getElementById(id);
+    if (!wrap) return;
+    const tooltip = wrap.querySelector('.chart-tooltip');
+    const svg = wrap.querySelector('svg');
+    const data = JSON.parse(chartDataJson);
+
+    if (!svg || data.length === 0) return;
+
+    svg.addEventListener('mousemove', (e) => {
+      const rect = svg.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+
+      let closestIdx = 0;
+      let minDiff = Infinity;
+      data.forEach((d, i) => {
+        const diff = Math.abs(d.x - mouseX);
+        if (diff < minDiff) {
+          minDiff = diff;
+          closestIdx = i;
+        }
+      });
+
+      const d = data[closestIdx];
+      if (!d) return;
+
+      tooltip.style.display = 'block';
+      tooltip.style.left = closestIdx > data.length / 2 ? `${(d.x / rect.width) * 100 - 30}%` : `${(d.x / rect.width) * 100 + 4}%`;
+      tooltip.querySelector('.tt-label').textContent = d.label;
+      tooltip.querySelector('.tt-hits').textContent = d.hits.toLocaleString();
+      tooltip.querySelector('.tt-uniq').textContent = d.unique.toLocaleString();
+      tooltip.querySelector('.tt-bots').textContent = d.bots.toLocaleString();
+    });
+
+    svg.addEventListener('mouseleave', () => {
+      tooltip.style.display = 'none';
+    });
+  })();
+</script>

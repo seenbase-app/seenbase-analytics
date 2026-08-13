@@ -1,0 +1,9 @@
+---
+Astro.cookies.delete('seenbase_session', {
+  path: '/',
+  httpOnly: true,
+  sameSite: 'strict',
+});
+
+return Astro.redirect('/login');
+---

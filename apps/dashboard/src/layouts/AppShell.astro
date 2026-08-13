@@ -1,0 +1,44 @@
+---
+import '../styles/global.css';
+import Sidebar from '../components/chrome/Sidebar.astro';
+import Topbar from '../components/chrome/Topbar.astro';
+import type { Crumb } from '../components/chrome/Topbar.astro';
+
+interface Props {
+  title: string;
+  crumbs: Crumb[];
+  active: string;
+}
+
+const { title, crumbs, active } = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{title}</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <slot name="head" />
+  <script is:inline>
+    try {
+      const t = localStorage.getItem('theme');
+      if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    } catch {}
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <div class="app">
+    <Sidebar active={active} />
+    <div class="main">
+      <Topbar crumbs={crumbs} />
+      <main id="main-content" class="page">
+        <slot />
+      </main>
+    </div>
+  </div>
+</body>
+</html>

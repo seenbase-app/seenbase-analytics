@@ -1,0 +1,25 @@
+{
+  "name": "@seenbase-analytics/dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev --port 4321",
+    "build": "astro build",
+    "preview": "astro preview",
+    "deploy": "astro build && wrangler deploy",
+    "typecheck": "astro check",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "@astrojs/cloudflare": "14.2.1",
+    "@seenbase-analytics/db": "*",
+    "astro": "7.2.1"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.9",
+    "@cloudflare/workers-types": "^4.20250514.0",
+    "typescript": "^5.8.3",
+    "wrangler": "4.122.0"
+  }
+}

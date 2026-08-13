@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "seenbase-analytics-tracker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    "crons": ["*/2 * * * *", "0 3 * * *"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "seenbase-analytics-local",
+      "database_id": "seenbase-analytics-local",
+      "preview_database_id": "seenbase-analytics-local"
+    }
+  ],
+  "vars": {
+    "RETENTION_DAYS": "90"
+  }
+}
