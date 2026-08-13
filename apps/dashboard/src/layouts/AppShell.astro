@@ -35,8 +35,12 @@ const { title, crumbs, active } = Astro.props;
     <Sidebar active={active} />
     <div class="main">
       <Topbar crumbs={crumbs} />
-      <main id="main-content" class="page">
+      <main id="main-content" class="page" style="display:flex;flex-direction:column;min-height:calc(100vh - 56px);">
         <slot />
+        <footer style="margin-top:auto;padding-top:24px;padding-bottom:12px;font-size:11.5px;color:var(--text-3);display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--border-subtle);">
+          <span>We respect the open web.</span>
+          <a href="https://github.com/seenbase-app/seenbase-analytics" target="_blank" rel="noopener noreferrer" style="color:var(--text-2);text-decoration:underline;">Source on GitHub ↗</a>
+        </footer>
       </main>
     </div>
   </div>
